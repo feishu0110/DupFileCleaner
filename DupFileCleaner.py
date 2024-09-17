@@ -11,6 +11,7 @@ from collections import defaultdict
 import threading
 from threading import Thread
 import time
+import multiprocessing
 
 class FileMerger:
     def __init__(self, root):
@@ -127,10 +128,18 @@ class FileMerger:
         self.result_text.pack(fill="both", expand=True)
 
         # 初始化多进程变量
+        self.manager = None
+        self.file_hashes = None
+        self.cancel_flag = None
+        self.directory = ""
+        self.total_files = None
+        self.scanned_files = None
+        self.progress_queue = None
+
+    def initialize_multiprocessing(self):
         self.manager = Manager()
         self.file_hashes = self.manager.dict()
         self.cancel_flag = self.manager.Value('i', 0)
-        self.directory = ""
         self.total_files = self.manager.Value('i', 0)
         self.scanned_files = self.manager.Value('i', 0)
         self.progress_queue = self.manager.Queue()
@@ -144,6 +153,7 @@ class FileMerger:
         if not self.directory:
             messagebox.showinfo("提示", "请先选择文件目录")
             return
+        self.initialize_multiprocessing()
         self.file_hashes.clear()
         self.cancel_flag.value = 0
         self.progress["value"] = 0
@@ -155,7 +165,8 @@ class FileMerger:
         self.merge_button.config(state="disabled")
         self.cancel_button.config(state="normal")
         
-        Thread(target=self.scan_files, daemon=True).start()
+        self.scan_thread = Thread(target=self.scan_files, daemon=True)
+        self.scan_thread.start()
         self.update_progress()
 
     def scan_files(self):
@@ -256,6 +267,7 @@ class FileMerger:
             messagebox.showinfo("提示", "请先扫描文件并查找重复")
             return
         
+        self.initialize_multiprocessing()
         hash_to_files = defaultdict(list)
         for file_path, file_hash in self.file_hashes.items():
             hash_to_files[file_hash].append(file_path)
@@ -279,7 +291,8 @@ class FileMerger:
         self.merge_button.config(state="disabled")
         self.cancel_button.config(state="normal")
         
-        Thread(target=self.merge_files_thread, args=(duplicates, merged_dir), daemon=True).start()
+        self.merge_thread = Thread(target=self.merge_files_thread, args=(duplicates, merged_dir), daemon=True)
+        self.merge_thread.start()
         self.update_progress()
 
     def merge_files_thread(self, duplicates, merged_dir):
@@ -308,6 +321,10 @@ class FileMerger:
 
     def cancel(self):
         self.cancel_flag.value = 1
+        if hasattr(self, 'scan_thread'):
+            self.scan_thread.join()
+        if hasattr(self, 'merge_thread'):
+            self.merge_thread.join()
         messagebox.showinfo("取消", "操作已取消")
         self.reset_ui()
 
@@ -377,10 +394,14 @@ def merge_file_group(args):
     except Exception as e:
         return (main_file, None, str(e))
 
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = FileMerger(root)
-    root.mainloop()
+
+
+def process_file(args):
+    file_path, current_folder = args
+    file_hash = hash_file(file_path)
+    if file_hash:
+        return (file_path, file_hash, current_folder)
+    return None
 
 def hash_file(file_path):
     hasher = hashlib.md5()
@@ -414,6 +435,7 @@ def merge_file_group(args):
         return (main_file, None, str(e))
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     root = tk.Tk()
     app = FileMerger(root)
     root.mainloop()
